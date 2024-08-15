@@ -96,7 +96,7 @@ tokenizer = AutoTokenizer.from_pretrained(
     model_path,
     model_max_length=model_max_length,
     trust_remote_code=True,
-    add_bos_token=False,  # 没有<s>
+    add_bos_token=False,  
 )
 
 
