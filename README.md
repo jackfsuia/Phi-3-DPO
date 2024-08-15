@@ -1,2 +1,2 @@
 # Phi-3-DPO
-Phi-3 DPO script
+a Phi-3 DPO training script.
