@@ -7,11 +7,12 @@ from transformers import (
     AutoModelForCausalLM,
     TrainingArguments,
     AutoTokenizer,
+    EarlyStoppingCallback,
 )
 
-model_path = "./"
-train_dataset_path = "./train.jsonl"
-eval_dataset_path = "./eval.jsonl"
+m_path = "./"
+train_dataset_path = "train.jsonl"
+eval_dataset_path = "eval.jsonl"
 
 model_max_length = 2000
 evaluate_before_train = True
@@ -32,33 +33,35 @@ lora_target_modules = [
 modules_to_save = ["embed_tokens", "lm_head"]
 q_lora = False
 training_args = DPOConfig(
-    output_dir="./outputmodels",
+    output_dir="/data/cvx-coder/outputmodels2",
     num_train_epochs=20,
     bf16=True,
     per_device_train_batch_size=2,
     per_device_eval_batch_size=4,
-    gradient_accumulation_steps=32,
+    gradient_accumulation_steps=512,
     eval_strategy="steps",
-    eval_steps=5,
+    eval_steps=1,
     save_strategy="steps",
-    save_steps=5,
+    save_steps=1,
     save_total_limit=3,
-    learning_rate=1e-4,
+    learning_rate=5e-6,
     weight_decay=0.1,
     adam_beta2=0.95,
     warmup_ratio=0.01,
     lr_scheduler_type="cosine",
     log_level="info",
-    logging_dir="./outputmodels/logs",
+    logging_dir="/data/cvx-coder/outputmodels2/logs",
     logging_strategy="steps",
     logging_steps=1,
     report_to="tensorboard",
     gradient_checkpointing=True,
     overwrite_output_dir=True,
+    metric_for_best_model="eval_train_loss",
+    load_best_model_at_end=True
 )
 
 model = AutoModelForCausalLM.from_pretrained(
-    model_path,
+    m_path,
     device_map="cuda",
     torch_dtype="auto",
     trust_remote_code=True,
@@ -72,7 +75,7 @@ if use_lora:
         lora_dropout=lora_dropout,
         bias=lora_bias,
         task_type="CAUSAL_LM",
-        modules_to_save=modules_to_save,
+        modules_to_save=modules_to_save,  # This argument serves for adding new tokens.
     )
     if q_lora:
         model = prepare_model_for_kbit_training(
@@ -87,18 +90,23 @@ if use_lora:
         model.enable_input_require_grads()
 
 ref_model = AutoModelForCausalLM.from_pretrained(
-    model_path,
+    m_path,
     device_map="cuda",
     torch_dtype="auto",
     trust_remote_code=True,
 )
 tokenizer = AutoTokenizer.from_pretrained(
-    model_path,
+    m_path,
     model_max_length=model_max_length,
     trust_remote_code=True,
-    add_bos_token=False,  
+    add_bos_token=False,  # 没有<s>
 )
 
+# ##---------------- Phi3 专用配置
+tokenizer.pad_token = tokenizer.unk_token  # use unk rather than eos token to prevent endless generation
+tokenizer.pad_token_id = tokenizer.convert_tokens_to_ids(tokenizer.pad_token)
+tokenizer.padding_side = 'right'
+# ##---------------- Phi3 专用配置
 
 def templating(example, tokenizer):
     chosen = [
@@ -129,7 +137,7 @@ train_dataset = load_dataset(
     data_files=train_dataset_path,
     trust_remote_code=True,
     split="train",
-)
+)  # train[:15%]
 train_dataset = train_dataset.map(
     templating,
     fn_kwargs={
@@ -141,14 +149,13 @@ eval_dataset = load_dataset(
     os.path.dirname(eval_dataset_path),
     data_files=eval_dataset_path,
     trust_remote_code=True,
-)
+)  # train[:15%]
 eval_dataset = eval_dataset.map(
     templating,
     fn_kwargs={
         "tokenizer": tokenizer,
     },
 )
-
 
 dpo_trainer = DPOTrainer(
     model,
@@ -159,9 +166,8 @@ dpo_trainer = DPOTrainer(
     eval_dataset=eval_dataset,
     tokenizer=tokenizer,
     max_length=model_max_length,
+    callbacks=[EarlyStoppingCallback(early_stopping_patience=5)],
 )
-
 if evaluate_before_train:
     print(dpo_trainer.evaluate())
-
 dpo_trainer.train()
